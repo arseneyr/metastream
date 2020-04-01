@@ -706,15 +706,23 @@
           }
         })
 
+      const onNewMedia = media => {
+        debugger
+        if (player && typeof player.destroy === 'function') player.destroy()
+        player = new CastPlayer(media)
+      }
+
       const onNewSession = session => {
         session.media = interceptSetCall(session.media, '0', media => {
           if (!media) {
             debugger
           }
-          if (player && typeof player.destroy === 'function') player.destroy()
-          player = new CastPlayer(media)
+          onNewMedia(media)
           return media
         })
+        if (session.media.length) {
+          onNewMedia(session.media[0])
+        }
         return session
       }
 
@@ -725,19 +733,38 @@
           }
         })
 
-      if (!chrome.cast) {
-        chrome = interceptSetCall(chrome, 'cast', cast => {
-          if (!cast.requestSession) {
-            return interceptSetCall(cast, 'requestSession', requestSession =>
-              newRequestSession(requestSession)
-            )
-          } else {
-            cast.requestSession = newRequestSession(cast.requestSession)
-            return cast
+      const newInitialize = oldInitialize =>
+        new Proxy(oldInitialize, {
+          apply(target, thisArg, [apiConfig, ...args]) {
+            const oldListener = apiConfig.sessionListener
+            apiConfig.sessionListener = session => oldListener(onNewSession(session))
+            return target.apply(thisArg, [apiConfig, ...args])
           }
         })
+
+      if (!chrome.cast) {
+        chrome = interceptSetCall(
+          interceptSetCall(chrome, 'cast', cast => {
+            if (!cast.initialize) {
+              return interceptSetCall(cast, 'initialize', newInitialize)
+            } else {
+              cast.initialize = newInitialize(cast.initialize)
+              return cast
+            }
+          }),
+          'cast',
+          cast => {
+            if (!cast.requestSession) {
+              return interceptSetCall(cast, 'requestSession', newRequestSession)
+            } else {
+              cast.requestSession = newRequestSession(cast.requestSession)
+              return cast
+            }
+          }
+        )
       } else {
         chrome.cast.requestSession = newRequestSession(chrome.cast.requestSession)
+        chrome.cast.initialize = newInitialize(chrome.cast.initialize)
       }
     }
 
@@ -1150,7 +1177,9 @@ ${ignoredSelectors}:empty {
         }
 
         if (media.readyState >= MediaReadyState.HAVE_CURRENT_DATA) {
-          setActiveMedia(media)
+          if (!player instanceof CastPlayer) {
+            setActiveMedia(media)
+          }
           media.removeEventListener('playing', checkMediaReady)
           media.removeEventListener('durationchange', checkMediaReady)
           media.removeEventListener('canplay', checkMediaReady)
