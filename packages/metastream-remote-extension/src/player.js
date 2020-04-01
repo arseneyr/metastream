@@ -593,6 +593,150 @@
       }
     }
 
+    class CastPlayer {
+      constructor(media) {
+        this.media = media
+        this.duration = null
+        this.playerState = null
+        this.currentTime = null
+
+        this.onStatusChange = this.onStatusChange.bind(this)
+        this.onPlaybackChange = this.onPlaybackChange.bind(this)
+        this.onSeeked = this.onSeeked.bind(this)
+        this.onReady = this.onReady.bind(this)
+        this.onTimeUpdate = throttle(this.onTimeUpdate.bind(this), 1e3)
+
+        this.media.addUpdateListener(this.onStatusChange)
+      }
+
+      play() {
+        this.media.play()
+      }
+
+      pause() {
+        this.media.pause()
+      }
+
+      seek(time) {
+        const seekRequest = new chrome.cast.media.SeekRequest()
+        seekRequest.currentTime = time * MS2SEC
+        this.media.seek(seekRequest)
+      }
+
+      setVolume(volume) {
+        this.media.setVolume(new chrome.cast.media.VolumeRequest(new chrome.cast.Volume(volume)))
+      }
+
+      destroy() {
+        this.media.removeUpdateListener(this.onStatusChange)
+      }
+
+      onStatusChange(stillAlive) {
+        if (this.media.media && this.media.media.duration && !this.duration) {
+          this.duration = this.media.media.duration
+          this.onReady()
+        }
+
+        if (!stillAlive || !this.playerState || this.playerState !== this.media.playerState) {
+          this.playerState = this.media.playerState
+          const { IDLE, PLAYING, PAUSED, BUFFERING } = chrome.cast.media.PlayerState
+          if (!stillAlive) {
+            this.onPlaybackChange('ended')
+          } else if (this.playerState === BUFFERING) {
+            this.onPlaybackChange('buffering')
+          } else if (this.playerState === PLAYING) {
+            this.onPlaybackChange('playing')
+          } else if (this.playerState === PAUSED) {
+            this.onPlaybackChange('paused')
+          }
+        }
+
+        if (this.currentTime !== this.media.getEstimatedTime()) {
+          this.currentTime = this.media.getEstimatedTime()
+          this.onTimeUpdate()
+        }
+      }
+
+      onPlaybackChange(state) {
+        dispatchMediaEvent({
+          type: 'media-playback-change',
+          payload: { state: state, time: this.media.getEstimatedTime() * SEC2MS }
+        })
+      }
+
+      onSeeked() {
+        dispatchMediaEvent({
+          type: 'media-seeked',
+          payload: this.media.getEstimatedTime() * SEC2MS
+        })
+      }
+
+      onTimeUpdate() {
+        dispatchMediaEvent({
+          type: 'media-time-update',
+          payload: this.media.getEstimatedTime() * SEC2MS
+        })
+      }
+
+      onReady() {
+        dispatchMediaEvent({
+          type: 'media-ready',
+          payload: {
+            duration: this.duration * SEC2MS,
+            href: location.href
+          }
+        })
+      }
+    }
+
+    if (chrome) {
+      const interceptSetCall = (target, property, handler) =>
+        new Proxy(target, {
+          set(t, p, v) {
+            if (p === property) {
+              t[p] = handler(v)
+            } else {
+              t[p] = v
+            }
+            return true
+          }
+        })
+
+      const onNewSession = session => {
+        session.media = interceptSetCall(session.media, '0', media => {
+          if (!media) {
+            debugger
+          }
+          if (player && typeof player.destroy === 'function') player.destroy()
+          player = new CastPlayer(media)
+          return media
+        })
+        return session
+      }
+
+      const newRequestSession = oldRequestSession =>
+        new Proxy(oldRequestSession, {
+          apply(target, thisArg, [success, ...args]) {
+            return target.apply(thisArg, [session => success(onNewSession(session)), ...args])
+          }
+        })
+
+      if (!chrome.cast) {
+        chrome = interceptSetCall(chrome, 'cast', cast => {
+          if (!cast.requestSession) {
+            return interceptSetCall(cast, 'requestSession', requestSession =>
+              newRequestSession(requestSession)
+            )
+          } else {
+            cast.requestSession = newRequestSession(cast.requestSession)
+            return cast
+          }
+        })
+      } else {
+        chrome.cast.requestSession = newRequestSession(chrome.cast.requestSession)
+      }
+    }
+
     //===========================================================================
     // Autoplay
     //===========================================================================
