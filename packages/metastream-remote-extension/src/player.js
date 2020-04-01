@@ -694,7 +694,7 @@
     }
 
     if (chrome) {
-      const interceptSetCall = (target, property, handler) =>
+      const interceptSet = (target, property, handler) =>
         new Proxy(target, {
           set(t, p, v) {
             if (p === property) {
@@ -706,20 +706,30 @@
           }
         })
 
+      const interceptApplyArgs = (target, handler) =>
+        new Proxy(target, {
+          apply(target, thisArg, args) {
+            return target.apply(thisArg, handler(args))
+          }
+        })
+
       const onNewMedia = media => {
-        debugger
         if (player && typeof player.destroy === 'function') player.destroy()
         player = new CastPlayer(media)
       }
 
       const onNewSession = session => {
-        session.media = interceptSetCall(session.media, '0', media => {
-          if (!media) {
-            debugger
-          }
-          onNewMedia(media)
-          return media
-        })
+        session.loadMedia = interceptApplyArgs(
+          session.loadMedia,
+          ([loadRequest, success, ...args]) => [
+            loadRequest,
+            media => {
+              onNewMedia(media)
+              return success(media)
+            },
+            ...args
+          ]
+        )
         if (session.media.length) {
           onNewMedia(session.media[0])
         }
@@ -727,26 +737,23 @@
       }
 
       const newRequestSession = oldRequestSession =>
-        new Proxy(oldRequestSession, {
-          apply(target, thisArg, [success, ...args]) {
-            return target.apply(thisArg, [session => success(onNewSession(session)), ...args])
-          }
-        })
+        interceptApplyArgs(oldRequestSession, ([success, ...args]) => [
+          session => success(onNewSession(session)),
+          ...args
+        ])
 
       const newInitialize = oldInitialize =>
-        new Proxy(oldInitialize, {
-          apply(target, thisArg, [apiConfig, ...args]) {
-            const oldListener = apiConfig.sessionListener
-            apiConfig.sessionListener = session => oldListener(onNewSession(session))
-            return target.apply(thisArg, [apiConfig, ...args])
-          }
+        interceptApplyArgs(oldInitialize, ([apiConfig, ...args]) => {
+          const oldListener = apiConfig.sessionListener
+          apiConfig.sessionListener = session => oldListener(onNewSession(session))
+          return [apiConfig, ...args]
         })
 
       if (!chrome.cast) {
-        chrome = interceptSetCall(
-          interceptSetCall(chrome, 'cast', cast => {
+        chrome = interceptSet(
+          interceptSet(chrome, 'cast', cast => {
             if (!cast.initialize) {
-              return interceptSetCall(cast, 'initialize', newInitialize)
+              return interceptSet(cast, 'initialize', newInitialize)
             } else {
               cast.initialize = newInitialize(cast.initialize)
               return cast
@@ -755,7 +762,7 @@
           'cast',
           cast => {
             if (!cast.requestSession) {
-              return interceptSetCall(cast, 'requestSession', newRequestSession)
+              return interceptSet(cast, 'requestSession', newRequestSession)
             } else {
               cast.requestSession = newRequestSession(cast.requestSession)
               return cast
