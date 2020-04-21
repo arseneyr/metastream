@@ -500,7 +500,9 @@
         const { volume } = this
         if (volume && this.media.volume !== volume) {
           console.debug(
-            `[Metastream Remote] Volume changed internally (${this.media.volume}), reverting to ${volume}`
+            `[Metastream Remote] Volume changed internally (${
+              this.media.volume
+            }), reverting to ${volume}`
           )
           this.setVolume(volume)
         }
@@ -1184,7 +1186,7 @@ ${ignoredSelectors}:empty {
         }
 
         if (media.readyState >= MediaReadyState.HAVE_CURRENT_DATA) {
-          if (!player instanceof CastPlayer) {
+          if (!(player instanceof CastPlayer)) {
             setActiveMedia(media)
           }
           media.removeEventListener('playing', checkMediaReady)
